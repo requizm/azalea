@@ -159,6 +159,7 @@ pub fn make_block_states(input: TokenStream) -> TokenStream {
     let mut properties_to_state_ids = HashMap::<String, Vec<PropertyVariantData>>::new();
 
     let mut state_id: BlockStateIntegerRepr = 0;
+    let mut block_kinds: Vec<Ident> = Vec::new();
     for block in &input.blocks.blocks {
         let block_property_names = &block
             .properties_and_defaults
@@ -261,6 +262,7 @@ pub fn make_block_states(input: TokenStream) -> TokenStream {
             });
             default_state_id = Some(state_id);
             state_id += 1;
+            block_kinds.push(block_name_pascal_case.clone());
         }
         for combination in combinations_of(&block_properties_vec) {
             let mut is_default = true;
@@ -328,6 +330,7 @@ pub fn make_block_states(input: TokenStream) -> TokenStream {
             }
 
             state_id += 1;
+            block_kinds.push(block_name_pascal_case.clone());
         }
 
         let Some(default_state_id) = default_state_id else {
@@ -551,7 +554,15 @@ pub fn make_block_states(input: TokenStream) -> TokenStream {
     }
 
     let last_state_id = state_id - 1;
+    let mut lookup_items = quote! {};
+    for kind in &block_kinds {
+        lookup_items.extend(quote! { BlockKind::#kind, });
+    }
     let mut generated = quote! {
+        use azalea_registry::builtin::BlockKind;
+
+        const BLOCK_KIND_LOOKUP: [BlockKind; {#last_state_id as usize + 1}] = [#lookup_items];
+
         impl BlockState {
             /// The highest possible block state ID.
             pub const MAX_STATE: BlockStateIntegerRepr = #last_state_id;
@@ -565,6 +576,11 @@ pub fn make_block_states(input: TokenStream) -> TokenStream {
             /// ```
             pub fn property<P: Property>(self) -> Option<P::Value> {
                 P::try_from_block_state(self)
+            }
+
+            /// Get the block kind for this block state.
+            pub fn block_kind(&self) -> BlockKind {
+                BLOCK_KIND_LOOKUP[self.id() as usize]
             }
         }
     };

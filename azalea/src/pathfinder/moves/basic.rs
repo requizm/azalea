@@ -78,6 +78,12 @@ fn execute_forward_move(mut ctx: ExecuteCtx) {
     if ctx.mine_while_at_start(ctx.target) {
         return;
     }
+    if ctx.interact_while_at_start(ctx.target.up(1)) {
+        return;
+    }
+    if ctx.interact_while_at_start(ctx.target) {
+        return;
+    }
 
     ctx.look_at(center);
     ctx.sprint(SprintDirection::Forward);
@@ -161,6 +167,15 @@ fn execute_ascend_move(mut ctx: ExecuteCtx) {
         return;
     }
     if ctx.mine_while_at_start(target.up(1)) {
+        return;
+    }
+    if ctx.interact_while_at_start(start.up(2)) {
+        return;
+    }
+    if ctx.interact_while_at_start(target) {
+        return;
+    }
+    if ctx.interact_while_at_start(target.up(1)) {
         return;
     }
 
@@ -332,6 +347,9 @@ pub fn execute_descend_move(mut ctx: ExecuteCtx) {
 
     for i in (0..=(start.y - target.y + 1)).rev() {
         if ctx.mine_while_at_start(target.up(i)) {
+            return;
+        }
+        if ctx.interact_while_at_start(target.up(i)) {
             return;
         }
     }
@@ -521,7 +539,7 @@ fn execute_downward_move(mut ctx: ExecuteCtx) {
     if horizontal_distance_from_target > 0.25 {
         ctx.look_at(target_center);
         ctx.walk(WalkDirection::Forward);
-    } else if ctx.mine_while_at_start(target) {
+    } else if ctx.mine_while_at_start(target) || ctx.interact_while_at_start(target) {
         ctx.walk(WalkDirection::None);
     } else if BlockPos::from(position) != target {
         ctx.look_at(target_center);

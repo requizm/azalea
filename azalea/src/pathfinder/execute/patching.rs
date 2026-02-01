@@ -47,7 +47,7 @@ pub fn check_for_path_obstruction(
 
         // obstruction check (the path we're executing isn't possible anymore)
         let origin = executing_path.last_reached_node;
-        let cached_world = CachedWorld::new(world_lock, origin);
+        let cached_world = CachedWorld::new(world_lock, origin, opts.door_handling.clone());
         let mining_cache = MiningCache::new(if opts.allow_mining {
             Some(inventory.inventory_menu.clone())
         } else {
@@ -62,6 +62,7 @@ pub fn check_for_path_obstruction(
                 &custom_state_ref,
                 opts.successors_fn,
                 pos,
+                &opts.door_handling,
             )
         };
 

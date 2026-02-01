@@ -17,7 +17,7 @@ use super::{
     moves,
     simulation::{SimulatedPlayerBundle, Simulation},
 };
-use crate::pathfinder::goto_event::PathfinderOpts;
+use crate::pathfinder::goto_event::{DoorHandling, PathfinderOpts};
 
 fn setup_blockposgoal_simulation(
     partial_chunks: &mut PartialChunkStorage,
@@ -40,6 +40,7 @@ fn setup_blockposgoal_simulation(
         opts: PathfinderOpts {
             successors_fn: moves::default_move,
             allow_mining: false,
+            door_handling: DoorHandling::Open,
             retry_on_no_path: true,
             min_timeout: PathfinderTimeout::Nodes(1_000_000),
             max_timeout: PathfinderTimeout::Nodes(5_000_000),

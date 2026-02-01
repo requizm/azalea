@@ -3,7 +3,7 @@ use azalea_core::position::Vec3;
 use bevy_ecs::prelude::*;
 
 use super::ExecutingPath;
-use crate::pathfinder::moves::should_mine_block_state;
+use crate::pathfinder::{DoorHandling, moves::should_mine_block_state};
 
 /// A component that makes bots run /particle commands while pathfinding to show
 /// where they're going.
@@ -75,8 +75,8 @@ pub fn debug_render_path_with_particles(
             // this isn't foolproof, there might be another block that could be mined
             // depending on the move, but it's good enough for debugging
             // purposes
-            let is_mining = should_mine_block_state(target_block_state)
-                || should_mine_block_state(above_target_block_state);
+            let is_mining = should_mine_block_state(target_block_state, &DoorHandling::Open)
+                || should_mine_block_state(above_target_block_state, &DoorHandling::Open);
 
             let (r, g, b): (f64, f64, f64) = if i == 0 {
                 (0., 1., 0.)

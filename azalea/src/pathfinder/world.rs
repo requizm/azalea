@@ -17,7 +17,7 @@ use azalea_world::{World, palette::PalettedContainer};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
-use super::{mining::MiningCache, positions::RelBlockPos};
+use super::{DoorHandling, mining::MiningCache, positions::RelBlockPos};
 use crate::pathfinder::positions::SmallChunkSectionPos;
 
 const MAX_VIEW_DISTANCE: usize = 32;
@@ -41,6 +41,7 @@ pub struct CachedWorld {
 
     #[allow(clippy::type_complexity)]
     cached_mining_costs: UnsafeCell<Option<Box<[(RelBlockPos, f32)]>>>,
+    door_handling: DoorHandling,
 }
 
 // we store `PalettedContainer`s instead of `Chunk`s or `Section`s because it
@@ -109,7 +110,11 @@ pub struct SectionBitsets {
 }
 
 impl CachedWorld {
-    pub fn new(world_lock: Arc<RwLock<World>>, origin: BlockPos) -> Self {
+    pub fn new(
+        world_lock: Arc<RwLock<World>>,
+        origin: BlockPos,
+        door_handling: DoorHandling,
+    ) -> Self {
         let min_y = world_lock.read().chunks.min_y;
         Self {
             origin,
@@ -121,6 +126,156 @@ impl CachedWorld {
             unbounded_chunk_cache: Default::default(),
             cached_blocks: Default::default(),
             cached_mining_costs: UnsafeCell::new(None),
+            door_handling,
+        }
+    }
+
+    fn is_regular_door_kind(block_kind: BlockKind) -> bool {
+        matches!(
+            block_kind,
+            BlockKind::OakDoor
+                | BlockKind::IronDoor
+                | BlockKind::SpruceDoor
+                | BlockKind::BirchDoor
+                | BlockKind::JungleDoor
+                | BlockKind::AcaciaDoor
+                | BlockKind::CherryDoor
+                | BlockKind::DarkOakDoor
+                | BlockKind::PaleOakDoor
+                | BlockKind::MangroveDoor
+                | BlockKind::BambooDoor
+                | BlockKind::CrimsonDoor
+                | BlockKind::WarpedDoor
+                | BlockKind::CopperDoor
+                | BlockKind::ExposedCopperDoor
+                | BlockKind::OxidizedCopperDoor
+                | BlockKind::WeatheredCopperDoor
+                | BlockKind::WaxedCopperDoor
+                | BlockKind::WaxedExposedCopperDoor
+                | BlockKind::WaxedOxidizedCopperDoor
+                | BlockKind::WaxedWeatheredCopperDoor
+        )
+    }
+
+    fn is_trapdoor_kind(block_kind: BlockKind) -> bool {
+        matches!(
+            block_kind,
+            BlockKind::OakTrapdoor
+                | BlockKind::SpruceTrapdoor
+                | BlockKind::BirchTrapdoor
+                | BlockKind::JungleTrapdoor
+                | BlockKind::AcaciaTrapdoor
+                | BlockKind::CherryTrapdoor
+                | BlockKind::DarkOakTrapdoor
+                | BlockKind::PaleOakTrapdoor
+                | BlockKind::MangroveTrapdoor
+                | BlockKind::BambooTrapdoor
+                | BlockKind::CrimsonTrapdoor
+                | BlockKind::WarpedTrapdoor
+                | BlockKind::IronTrapdoor
+                | BlockKind::CopperTrapdoor
+                | BlockKind::ExposedCopperTrapdoor
+                | BlockKind::OxidizedCopperTrapdoor
+                | BlockKind::WeatheredCopperTrapdoor
+                | BlockKind::WaxedCopperTrapdoor
+                | BlockKind::WaxedExposedCopperTrapdoor
+                | BlockKind::WaxedOxidizedCopperTrapdoor
+                | BlockKind::WaxedWeatheredCopperTrapdoor
+        )
+    }
+
+    fn is_fence_gate_kind(block_kind: BlockKind) -> bool {
+        matches!(
+            block_kind,
+            BlockKind::OakFenceGate
+                | BlockKind::SpruceFenceGate
+                | BlockKind::BirchFenceGate
+                | BlockKind::JungleFenceGate
+                | BlockKind::AcaciaFenceGate
+                | BlockKind::CherryFenceGate
+                | BlockKind::DarkOakFenceGate
+                | BlockKind::PaleOakFenceGate
+                | BlockKind::MangroveFenceGate
+                | BlockKind::BambooFenceGate
+                | BlockKind::CrimsonFenceGate
+                | BlockKind::WarpedFenceGate
+        )
+    }
+
+    fn is_door_properly_placed(&self, block_state: BlockState, pos: BlockPos) -> bool {
+        let block_kind = block_state.block_kind();
+        if Self::is_regular_door_kind(block_kind) {
+            if let Some(half) = block_state.property::<properties::Half>() {
+                match half {
+                    properties::Half::Lower => {
+                        let support_pos = pos.down(1);
+                        let support_state = self
+                            .world_lock
+                            .read()
+                            .get_block_state(support_pos)
+                            .unwrap_or_default();
+                        is_block_state_solid(support_state)
+                    }
+                    properties::Half::Upper => {
+                        let support_pos = pos.down(1).down(1);
+                        let support_state = self
+                            .world_lock
+                            .read()
+                            .get_block_state(support_pos)
+                            .unwrap_or_default();
+                        is_block_state_solid(support_state)
+                    }
+                }
+            } else {
+                let support_pos = pos.down(1);
+                let support_state = self
+                    .world_lock
+                    .read()
+                    .get_block_state(support_pos)
+                    .unwrap_or_default();
+                is_block_state_solid(support_state)
+            }
+        } else if Self::is_trapdoor_kind(block_kind) {
+            if let Some(half) = block_state.property::<properties::TopBottom>() {
+                match half {
+                    properties::TopBottom::Bottom => {
+                        let support_pos = pos.down(1);
+                        let support_state = self
+                            .world_lock
+                            .read()
+                            .get_block_state(support_pos)
+                            .unwrap_or_default();
+                        is_block_state_solid(support_state)
+                    }
+                    properties::TopBottom::Top => {
+                        let support_pos = pos.up(1);
+                        let support_state = self
+                            .world_lock
+                            .read()
+                            .get_block_state(support_pos)
+                            .unwrap_or_default();
+                        is_block_state_solid(support_state)
+                    }
+                }
+            } else {
+                let support_pos = pos.down(1);
+                let support_state = self
+                    .world_lock
+                    .read()
+                    .get_block_state(support_pos)
+                    .unwrap_or_default();
+                is_block_state_solid(support_state)
+            }
+        } else if Self::is_fence_gate_kind(block_kind) {
+            let support_pos = pos.down(1);
+            let support_state = self
+                .world_lock
+                .read()
+                .get_block_state(support_pos)
+                .unwrap_or_default();
+            is_block_state_solid(support_state)
+        } else {
+            true
         }
     }
 
@@ -225,7 +380,25 @@ impl CachedWorld {
 
                 for i in 0..4096 {
                     let block_state = section.get_at_index(i);
-                    if is_block_state_passable(block_state) {
+                    let passable = if is_door_block_kind(block_state.block_kind()) {
+                        match self.door_handling {
+                            DoorHandling::Solid => false,
+                            _ => {
+                                let chunk_pos =
+                                    ChunkPos::new(section_pos.x as i32, section_pos.z as i32);
+                                let x = (i % 16) as i32;
+                                let y = ((i / 256) % 16) as i32 + section_pos.y * 16;
+                                let z = ((i / 16) % 16) as i32;
+                                let pos =
+                                    BlockPos::new(chunk_pos.x * 16 + x, y, chunk_pos.z * 16 + z);
+                                self.is_door_properly_placed(block_state, pos)
+                                    && is_block_state_passable(block_state, &self.door_handling)
+                            }
+                        }
+                    } else {
+                        is_block_state_passable(block_state, &self.door_handling)
+                    };
+                    if passable {
                         passable_bitset.set(i);
                     }
                     if is_block_state_solid(block_state) {
@@ -588,7 +761,7 @@ fn calculate_cached_mining_costs_index(pos: RelBlockPos) -> usize {
 }
 
 /// Whether our client could pass through this block.
-pub fn is_block_state_passable(block_state: BlockState) -> bool {
+pub fn is_block_state_passable(block_state: BlockState, door_handling: &DoorHandling) -> bool {
     // i already tried optimizing this by having it cache in an IntMap/FxHashMap but
     // it wasn't measurably faster
 
@@ -596,11 +769,51 @@ pub fn is_block_state_passable(block_state: BlockState) -> bool {
         // fast path
         return true;
     }
+
     if !block_state.is_collision_shape_empty() {
+        match door_handling {
+            DoorHandling::Solid => return false,
+            DoorHandling::Open | DoorHandling::PassThroughOpen => {
+                // Check if this is a door that we can pass through
+                let block_kind = block_state.block_kind();
+                if is_door_block_kind(block_kind) {
+                    match door_handling {
+                        DoorHandling::Open => {
+                            if !is_door_block_kind_not_openable_by_hand(block_kind) {
+                                // Openable by hand: we can pass through closed ones
+                                return true;
+                            } else {
+                                // Not openable by hand: only passable if open
+                                let open_prop = block_state
+                                    .property::<azalea_block::properties::Open>()
+                                    .unwrap_or(false);
+                                if open_prop {
+                                    return true;
+                                }
+                                return false;
+                            }
+                        }
+                        DoorHandling::PassThroughOpen => {
+                            // Only passable if open
+                            let open_prop = block_state
+                                .property::<azalea_block::properties::Open>()
+                                .unwrap_or(false);
+                            if open_prop {
+                                return true;
+                            }
+                            return false;
+                        }
+                        DoorHandling::Solid => unreachable!(),
+                    }
+                }
+            }
+        }
         return false;
     }
-    let registry_block = BlockKind::from(block_state);
-    if registry_block == BlockKind::Water {
+
+    let block_kind = block_state.block_kind();
+
+    if block_kind == BlockKind::Water {
         return false;
     }
     if block_state
@@ -609,31 +822,110 @@ pub fn is_block_state_passable(block_state: BlockState) -> bool {
     {
         return false;
     }
-    if registry_block == BlockKind::Lava {
+    if block_kind == BlockKind::Lava {
         return false;
     }
     // block.waterlogged currently doesn't account for seagrass and some other water
     // blocks
-    if block_state == BlockKind::Seagrass.into() {
+    if block_kind == BlockKind::Seagrass {
         return false;
     }
 
     // don't walk into fire
-    if registry_block == BlockKind::Fire || registry_block == BlockKind::SoulFire {
+    if block_kind == BlockKind::Fire || block_kind == BlockKind::SoulFire {
         return false;
     }
 
-    if registry_block == BlockKind::PowderSnow {
+    if block_kind == BlockKind::PowderSnow {
         // we can't jump out of powder snow
         return false;
     }
 
-    if registry_block == BlockKind::SweetBerryBush {
+    if block_kind == BlockKind::SweetBerryBush {
         // these hurt us
         return false;
     }
 
     true
+}
+
+/// Check if a block kind is a door, fence gate, or trapdoor.
+pub fn is_door_block_kind(block_kind: BlockKind) -> bool {
+    matches!(
+        block_kind,
+        BlockKind::OakDoor
+            | BlockKind::IronDoor
+            | BlockKind::SpruceDoor
+            | BlockKind::BirchDoor
+            | BlockKind::JungleDoor
+            | BlockKind::AcaciaDoor
+            | BlockKind::CherryDoor
+            | BlockKind::DarkOakDoor
+            | BlockKind::PaleOakDoor
+            | BlockKind::MangroveDoor
+            | BlockKind::BambooDoor
+            | BlockKind::CrimsonDoor
+            | BlockKind::WarpedDoor
+            | BlockKind::CopperDoor
+            | BlockKind::ExposedCopperDoor
+            | BlockKind::OxidizedCopperDoor
+            | BlockKind::WeatheredCopperDoor
+            | BlockKind::WaxedCopperDoor
+            | BlockKind::WaxedExposedCopperDoor
+            | BlockKind::WaxedOxidizedCopperDoor
+            | BlockKind::WaxedWeatheredCopperDoor
+            | BlockKind::OakFenceGate
+            | BlockKind::SpruceFenceGate
+            | BlockKind::BirchFenceGate
+            | BlockKind::JungleFenceGate
+            | BlockKind::AcaciaFenceGate
+            | BlockKind::CherryFenceGate
+            | BlockKind::DarkOakFenceGate
+            | BlockKind::PaleOakFenceGate
+            | BlockKind::MangroveFenceGate
+            | BlockKind::BambooFenceGate
+            | BlockKind::CrimsonFenceGate
+            | BlockKind::WarpedFenceGate
+            | BlockKind::OakTrapdoor
+            | BlockKind::SpruceTrapdoor
+            | BlockKind::BirchTrapdoor
+            | BlockKind::JungleTrapdoor
+            | BlockKind::AcaciaTrapdoor
+            | BlockKind::CherryTrapdoor
+            | BlockKind::DarkOakTrapdoor
+            | BlockKind::PaleOakTrapdoor
+            | BlockKind::MangroveTrapdoor
+            | BlockKind::BambooTrapdoor
+            | BlockKind::IronTrapdoor
+            | BlockKind::CrimsonTrapdoor
+            | BlockKind::WarpedTrapdoor
+            | BlockKind::CopperTrapdoor
+            | BlockKind::ExposedCopperTrapdoor
+            | BlockKind::OxidizedCopperTrapdoor
+            | BlockKind::WeatheredCopperTrapdoor
+            | BlockKind::WaxedCopperTrapdoor
+            | BlockKind::WaxedExposedCopperTrapdoor
+            | BlockKind::WaxedOxidizedCopperTrapdoor
+            | BlockKind::WaxedWeatheredCopperTrapdoor
+    )
+}
+
+/// Check if a door block kind cannot be opened by hand (e.g., iron doors, waxed
+/// copper doors).
+pub fn is_door_block_kind_not_openable_by_hand(block_kind: BlockKind) -> bool {
+    matches!(
+        block_kind,
+        BlockKind::IronDoor
+            | BlockKind::WaxedCopperDoor
+            | BlockKind::WaxedExposedCopperDoor
+            | BlockKind::WaxedWeatheredCopperDoor
+            | BlockKind::WaxedOxidizedCopperDoor
+            | BlockKind::IronTrapdoor
+            | BlockKind::WaxedCopperTrapdoor
+            | BlockKind::WaxedExposedCopperTrapdoor
+            | BlockKind::WaxedWeatheredCopperTrapdoor
+            | BlockKind::WaxedOxidizedCopperTrapdoor
+    )
 }
 
 /// Whether this block has a solid hitbox at the top (i.e. we can stand on it
@@ -662,9 +954,10 @@ pub fn is_block_state_solid(block_state: BlockState) -> bool {
         return true;
     }
 
-    let block = BlockKind::from(block_state);
+    let block_kind = block_state.block_kind();
+
     // solid enough
-    if matches!(block, BlockKind::DirtPath | BlockKind::Farmland) {
+    if matches!(block_kind, BlockKind::DirtPath | BlockKind::Farmland) {
         return true;
     }
 
@@ -678,8 +971,8 @@ pub fn is_block_state_standable(block_state: BlockState) -> bool {
         return true;
     }
 
-    let block = BlockKind::from(block_state);
-    if tags::blocks::SLABS.contains(&block) || tags::blocks::STAIRS.contains(&block) {
+    let block_kind = block_state.block_kind();
+    if tags::blocks::SLABS.contains(&block_kind) || tags::blocks::STAIRS.contains(&block_kind) {
         return true;
     }
 
@@ -693,9 +986,11 @@ pub fn is_block_state_water(block_state: BlockState) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use azalea_block::BlockTrait;
     use azalea_world::{Chunk, ChunkStorage, PartialWorld};
 
     use super::*;
+    use crate::pathfinder::moves::should_interact_with_door_block_state;
 
     #[test]
     fn test_is_passable() {
@@ -714,9 +1009,254 @@ mod tests {
             .chunks
             .set_block_state(BlockPos::new(0, 1, 0), BlockState::AIR, &world);
 
-        let ctx = CachedWorld::new(Arc::new(RwLock::new(world.into())), BlockPos::default());
+        let ctx = CachedWorld::new(
+            Arc::new(RwLock::new(world.into())),
+            BlockPos::default(),
+            DoorHandling::Open,
+        );
         assert!(!ctx.is_block_pos_passable(BlockPos::new(0, 0, 0)));
         assert!(ctx.is_block_pos_passable(BlockPos::new(0, 1, 0)));
+    }
+
+    #[test]
+    fn test_door_passability() {
+        // Test that closed openable doors are passable (can be opened)
+        let closed_oak_door = {
+            let door = azalea_block::blocks::OakDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: false, // closed
+                powered: false,
+            };
+            door.as_block_state()
+        };
+
+        let open_oak_door = {
+            let door = azalea_block::blocks::OakDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: true, // open
+                powered: false,
+            };
+            door.as_block_state()
+        };
+
+        // Closed openable doors should be passable (we can open them)
+        assert!(is_block_state_passable(
+            closed_oak_door,
+            &DoorHandling::Open
+        ));
+        // Open doors should also be passable (no collision)
+        assert!(is_block_state_passable(open_oak_door, &DoorHandling::Open));
+
+        // Closed iron doors should not be passable (can't open them)
+        let closed_iron_door = {
+            let door = azalea_block::blocks::IronDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: false,
+                powered: false,
+            };
+            door.as_block_state()
+        };
+        assert!(!is_block_state_passable(
+            closed_iron_door,
+            &DoorHandling::Open
+        ));
+
+        // Open iron doors should be passable
+        let open_iron_door = {
+            let door = azalea_block::blocks::IronDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: true,
+                powered: false,
+            };
+            door.as_block_state()
+        };
+        assert!(is_block_state_passable(open_iron_door, &DoorHandling::Open));
+
+        // Closed waxed copper doors should not be passable
+        let closed_waxed_door = {
+            let door = azalea_block::blocks::WaxedCopperDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: false,
+                powered: false,
+            };
+            door.as_block_state()
+        };
+        assert!(!is_block_state_passable(
+            closed_waxed_door,
+            &DoorHandling::Open
+        ));
+    }
+
+    #[test]
+    fn test_is_door_block_kind() {
+        // Doors
+        assert!(is_door_block_kind(BlockKind::OakDoor));
+        assert!(is_door_block_kind(BlockKind::IronDoor));
+        assert!(is_door_block_kind(BlockKind::CopperDoor));
+        // Fence gates
+        assert!(is_door_block_kind(BlockKind::OakFenceGate));
+        assert!(is_door_block_kind(BlockKind::CrimsonFenceGate));
+        // Trapdoors
+        assert!(is_door_block_kind(BlockKind::OakTrapdoor));
+        assert!(is_door_block_kind(BlockKind::IronTrapdoor));
+        assert!(is_door_block_kind(BlockKind::CopperTrapdoor));
+        // Non-door blocks
+        assert!(!is_door_block_kind(BlockKind::Stone));
+        assert!(!is_door_block_kind(BlockKind::Air));
+    }
+
+    #[test]
+    fn test_is_door_block_kind_not_openable_by_hand() {
+        // Iron doors
+        assert!(is_door_block_kind_not_openable_by_hand(BlockKind::IronDoor));
+        // Waxed copper doors
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedCopperDoor
+        ));
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedExposedCopperDoor
+        ));
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedWeatheredCopperDoor
+        ));
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedOxidizedCopperDoor
+        ));
+        // Iron trapdoors
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::IronTrapdoor
+        ));
+        // Waxed copper trapdoors
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedCopperTrapdoor
+        ));
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedExposedCopperTrapdoor
+        ));
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedWeatheredCopperTrapdoor
+        ));
+        assert!(is_door_block_kind_not_openable_by_hand(
+            BlockKind::WaxedOxidizedCopperTrapdoor
+        ));
+        // Openable doors should not be in this list
+        assert!(!is_door_block_kind_not_openable_by_hand(BlockKind::OakDoor));
+        assert!(!is_door_block_kind_not_openable_by_hand(
+            BlockKind::CopperDoor
+        ));
+        assert!(!is_door_block_kind_not_openable_by_hand(
+            BlockKind::OakTrapdoor
+        ));
+        // Non-door blocks
+        assert!(!is_door_block_kind_not_openable_by_hand(BlockKind::Stone));
+    }
+
+    #[test]
+    fn test_should_interact_with_door() {
+        let closed_oak_door = {
+            let door = azalea_block::blocks::OakDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: false, // closed
+                powered: false,
+            };
+            door.as_block_state()
+        };
+
+        let open_oak_door = {
+            let door = azalea_block::blocks::OakDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: true, // open
+                powered: false,
+            };
+            door.as_block_state()
+        };
+
+        // Should interact with closed openable doors
+        assert!(should_interact_with_door_block_state(closed_oak_door));
+        // Should not interact with open doors
+        assert!(!should_interact_with_door_block_state(open_oak_door));
+        // Should not interact with non-door blocks
+        assert!(!should_interact_with_door_block_state(
+            BlockKind::Stone.into()
+        ));
+
+        // Should interact with closed fence gates
+        let closed_oak_fence_gate = {
+            let gate = azalea_block::blocks::OakFenceGate {
+                facing: azalea_block::properties::FacingCardinal::North,
+                in_wall: false,
+                open: false, // closed
+                powered: false,
+            };
+            gate.as_block_state()
+        };
+        assert!(should_interact_with_door_block_state(closed_oak_fence_gate));
+
+        // Should interact with closed trapdoors
+        let closed_oak_trapdoor = {
+            let trapdoor = azalea_block::blocks::OakTrapdoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::TopBottom::Bottom,
+                open: false, // closed
+                powered: false,
+                waterlogged: false,
+            };
+            trapdoor.as_block_state()
+        };
+        assert!(should_interact_with_door_block_state(closed_oak_trapdoor));
+
+        // Should not interact with iron doors
+        let closed_iron_door = {
+            let door = azalea_block::blocks::IronDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: false,
+                powered: false,
+            };
+            door.as_block_state()
+        };
+        assert!(!should_interact_with_door_block_state(closed_iron_door));
+
+        // Should not interact with iron trapdoors
+        let closed_iron_trapdoor = {
+            let trapdoor = azalea_block::blocks::IronTrapdoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::TopBottom::Bottom,
+                open: false,
+                powered: false,
+                waterlogged: false,
+            };
+            trapdoor.as_block_state()
+        };
+        assert!(!should_interact_with_door_block_state(closed_iron_trapdoor));
+
+        // Should not interact with waxed copper doors
+        let closed_waxed_door = {
+            let door = azalea_block::blocks::WaxedCopperDoor {
+                facing: azalea_block::properties::FacingCardinal::North,
+                half: azalea_block::properties::Half::Lower,
+                hinge: azalea_block::properties::Hinge::Left,
+                open: false,
+                powered: false,
+            };
+            door.as_block_state()
+        };
+        assert!(!should_interact_with_door_block_state(closed_waxed_door));
     }
 
     #[test]
@@ -735,7 +1275,11 @@ mod tests {
             .chunks
             .set_block_state(BlockPos::new(0, 1, 0), BlockState::AIR, &world);
 
-        let ctx = CachedWorld::new(Arc::new(RwLock::new(world.into())), BlockPos::default());
+        let ctx = CachedWorld::new(
+            Arc::new(RwLock::new(world.into())),
+            BlockPos::default(),
+            DoorHandling::Open,
+        );
         assert!(ctx.is_block_pos_solid(BlockPos::new(0, 0, 0)));
         assert!(!ctx.is_block_pos_solid(BlockPos::new(0, 1, 0)));
     }
@@ -762,7 +1306,11 @@ mod tests {
             .chunks
             .set_block_state(BlockPos::new(0, 3, 0), BlockState::AIR, &world);
 
-        let ctx = CachedWorld::new(Arc::new(RwLock::new(world.into())), BlockPos::default());
+        let ctx = CachedWorld::new(
+            Arc::new(RwLock::new(world.into())),
+            BlockPos::default(),
+            DoorHandling::Open,
+        );
         assert!(ctx.is_standable_at_block_pos(BlockPos::new(0, 1, 0)));
         assert!(!ctx.is_standable_at_block_pos(BlockPos::new(0, 0, 0)));
         assert!(!ctx.is_standable_at_block_pos(BlockPos::new(0, 2, 0)));

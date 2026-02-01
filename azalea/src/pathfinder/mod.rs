@@ -51,9 +51,10 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use custom_state::{CustomPathfinderState, CustomPathfinderStateRef};
 use futures_lite::future;
-pub use goto_event::{GotoEvent, PathfinderOpts};
+pub use goto_event::{DoorHandling, GotoEvent, PathfinderOpts};
 use parking_lot::RwLock;
 use positions::RelBlockPos;
+use rustc_hash::FxHashMap;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, error, info, warn};
 
@@ -122,6 +123,9 @@ pub struct ExecutingPath {
     // and our ticks take a while
     pub ticks_since_last_node_reached: usize,
     pub is_path_partial: bool,
+    pub interacted_blocks: Vec<BlockPos>,
+    pub ticks_executing: usize,
+    pub last_door_interactions: FxHashMap<BlockPos, usize>,
 }
 
 #[derive(Clone, Debug, Message)]
@@ -133,6 +137,7 @@ pub struct PathFoundEvent {
     pub is_partial: bool,
     pub successors_fn: SuccessorsFn,
     pub allow_mining: bool,
+    pub door_handling: DoorHandling,
 }
 
 #[allow(clippy::type_complexity)]
@@ -432,7 +437,7 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
     let goto_id = ctx.goto_id_atomic.fetch_add(1, atomic::Ordering::SeqCst) + 1;
 
     let origin = ctx.start;
-    let cached_world = CachedWorld::new(ctx.world_lock, origin);
+    let cached_world = CachedWorld::new(ctx.world_lock, origin, ctx.opts.door_handling.clone());
     let successors = |pos: RelBlockPos| {
         call_successors_fn(
             &cached_world,
@@ -440,6 +445,7 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
             &ctx.custom_state.0.read(),
             ctx.opts.successors_fn,
             pos,
+            &ctx.opts.door_handling,
         )
     };
 
@@ -524,6 +530,7 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
         is_partial,
         successors_fn: ctx.opts.successors_fn,
         allow_mining: ctx.opts.allow_mining,
+        door_handling: ctx.opts.door_handling.clone(),
     })
 }
 
@@ -578,7 +585,8 @@ pub fn path_found_listener(
                         .expect("Entity tried to pathfind but the entity isn't in a valid world");
                     let origin = event.start;
                     let successors_fn: moves::SuccessorsFn = event.successors_fn;
-                    let cached_world = CachedWorld::new(world_lock, origin);
+                    let cached_world =
+                        CachedWorld::new(world_lock, origin, event.door_handling.clone());
                     let mining_cache = MiningCache::new(if event.allow_mining {
                         Some(inventory.inventory_menu.clone())
                     } else {
@@ -593,6 +601,7 @@ pub fn path_found_listener(
                             &custom_state_ref,
                             successors_fn,
                             pos,
+                            &event.door_handling,
                         )
                     };
 
@@ -644,6 +653,9 @@ pub fn path_found_listener(
                     last_reached_node: event.start,
                     ticks_since_last_node_reached: 0,
                     is_path_partial: event.is_partial,
+                    interacted_blocks: Vec::new(),
+                    ticks_executing: 0,
+                    last_door_interactions: FxHashMap::default(),
                 });
                 debug!("set path to {:?}", path.iter().take(10).collect::<Vec<_>>());
                 debug!("partial: {}", event.is_partial);
@@ -728,6 +740,7 @@ pub fn call_successors_fn(
     custom_state: &CustomPathfinderStateRef,
     successors_fn: SuccessorsFn,
     pos: RelBlockPos,
+    door_handling: &DoorHandling,
 ) -> Vec<astar::Edge<RelBlockPos, moves::MoveData>> {
     let mut edges = Vec::with_capacity(16);
     let mut ctx = MovesCtx {
@@ -735,6 +748,7 @@ pub fn call_successors_fn(
         world: cached_world,
         mining_cache,
         custom_state,
+        door_handling,
     };
     successors_fn(&mut ctx, pos);
     edges

@@ -7,13 +7,18 @@ use std::{
     sync::Arc,
 };
 
-use azalea_block::BlockState;
+use azalea_block::{
+    BlockState,
+    properties::{Half, Open},
+};
 use azalea_client::{
     PhysicsState, SprintDirection, StartSprintEvent, StartWalkEvent, WalkDirection,
-    inventory::SetSelectedHotbarSlotEvent, mining::StartMiningBlockEvent,
+    interact::StartUseItemEvent, inventory::SetSelectedHotbarSlotEvent,
+    mining::StartMiningBlockEvent,
 };
 use azalea_core::position::{BlockPos, Vec3};
 use azalea_inventory::Menu;
+use azalea_protocol::packets::game::s_interact::InteractionHand;
 use azalea_registry::builtin::BlockKind;
 use azalea_world::World;
 use bevy_ecs::{entity::Entity, message::MessageWriter, system::Commands, world::EntityWorldMut};
@@ -21,11 +26,11 @@ use parking_lot::RwLock;
 use tracing::debug;
 
 use super::{
-    astar,
+    DoorHandling, astar,
     custom_state::CustomPathfinderStateRef,
     mining::MiningCache,
     positions::RelBlockPos,
-    world::{CachedWorld, is_block_state_passable},
+    world::{CachedWorld, is_block_state_passable, is_door_block_kind},
 };
 use crate::{
     auto_tool::best_tool_in_hotbar_for_block,
@@ -65,7 +70,7 @@ impl Debug for MoveData {
     }
 }
 
-pub struct ExecuteCtx<'s, 'w1, 'w2, 'w3, 'w4, 'w5, 'w6, 'a> {
+pub struct ExecuteCtx<'s, 'w1, 'w2, 'w3, 'w4, 'w5, 'w6, 'w7, 'a, 'ep> {
     pub entity: Entity,
     /// The node that we're trying to reach.
     pub target: BlockPos,
@@ -84,9 +89,13 @@ pub struct ExecuteCtx<'s, 'w1, 'w2, 'w3, 'w4, 'w5, 'w6, 'a> {
     pub walk_events: &'a mut MessageWriter<'w4, StartWalkEvent>,
     pub jump_events: &'a mut MessageWriter<'w5, JumpEvent>,
     pub start_mining_events: &'a mut MessageWriter<'w6, StartMiningBlockEvent>,
+    pub start_use_item_events:
+        &'a mut MessageWriter<'w7, azalea_client::interact::StartUseItemEvent>,
+    pub executing_path: Option<&'ep mut super::ExecutingPath>,
+    pub door_handling: &'a DoorHandling,
 }
 
-impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
+impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_> {
     pub fn on_tick_start(&mut self) {
         self.set_sneaking(false);
     }
@@ -152,7 +161,7 @@ impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
     /// Returns whether this block could be mined.
     pub fn should_mine(&mut self, block: BlockPos) -> bool {
         let block_state = self.world.read().get_block_state(block).unwrap_or_default();
-        should_mine_block_state(block_state)
+        should_mine_block_state(block_state, self.door_handling)
     }
 
     /// Mine the block at the given position.
@@ -164,7 +173,7 @@ impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
         }
 
         let block_state = self.world.read().get_block_state(block).unwrap_or_default();
-        if is_block_state_passable(block_state) {
+        if is_block_state_passable(block_state, self.door_handling) {
             // block is already passable, no need to mine it
             return false;
         }
@@ -186,6 +195,71 @@ impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
             position: block,
             force: true,
         });
+
+        true
+    }
+
+    /// Interact with the block at the given position (e.g. open a door).
+    ///
+    /// Returns whether the block is being interacted with.
+    pub fn interact(&mut self, block: BlockPos) -> bool {
+        let Some(executing_path) = self.executing_path.as_mut() else {
+            return false;
+        };
+
+        let block_state = self.world.read().get_block_state(block).unwrap_or_default();
+        let registry_block = BlockKind::from(block_state);
+
+        let target_block = if is_door_block_kind(registry_block) {
+            if block_state.property::<Half>() == Some(Half::Upper) {
+                block.down(1)
+            } else {
+                block
+            }
+        } else {
+            block
+        };
+
+        if executing_path.interacted_blocks.contains(&target_block) {
+            return false;
+        }
+
+        let target_state = self
+            .world
+            .read()
+            .get_block_state(target_block)
+            .unwrap_or_default();
+        if !should_interact_with_door_block_state(target_state) {
+            return false;
+        }
+
+        let is_door = is_door_block_kind(BlockKind::from(target_state));
+
+        // Prevent spamming interactions on doors due to delayed block state updates
+        if is_door
+            && executing_path
+                .last_door_interactions
+                .get(&target_block)
+                .is_some_and(|&last_tick| executing_path.ticks_executing - last_tick < 40)
+        {
+            return false;
+        }
+
+        self.start_use_item_events.write(StartUseItemEvent {
+            entity: self.entity,
+            hand: InteractionHand::MainHand,
+            force_block: Some(target_block),
+        });
+
+        // Don't add doors to interacted_blocks, since they can close and need to be
+        // opened again
+        if !is_door {
+            executing_path.interacted_blocks.push(target_block);
+        } else {
+            executing_path
+                .last_door_interactions
+                .insert(target_block, executing_path.ticks_executing);
+        }
 
         true
     }
@@ -213,18 +287,87 @@ impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
         }
     }
 
+    /// Interact with the given block (e.g. open a door), but make sure the
+    /// player is standing at the start of the current node first.
+    pub fn interact_while_at_start(&mut self, block: BlockPos) -> bool {
+        let Some(_) = self.executing_path.as_ref() else {
+            return false;
+        };
+
+        let horizontal_distance_from_start = (self.start.center() - self.position)
+            .horizontal_distance_squared()
+            .sqrt();
+        let at_start_position = player_pos_to_block_pos(self.position) == self.start
+            && horizontal_distance_from_start < 0.25;
+
+        let should_interact = should_interact_with_door_block_state(self.get_block_state(block));
+        if should_interact {
+            let is_door = is_door_block_kind(BlockKind::from(self.get_block_state(block)));
+            let can_interact_now = if is_door {
+                // for doors, allow interaction if close enough to the block
+                let distance_to_block =
+                    self.position.horizontal_distance_squared_to(block.center());
+                distance_to_block < 4.0 // within 2 blocks
+            } else {
+                at_start_position
+            };
+
+            if can_interact_now {
+                self.look_at(block.center());
+                self.interact(block);
+                true
+            } else {
+                // walk towards the target
+                self.look_at(block.center());
+                self.walk(WalkDirection::Forward);
+                true
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn get_block_state(&self, block: BlockPos) -> BlockState {
         self.world.read().get_block_state(block).unwrap_or_default()
     }
 }
 
-pub fn should_mine_block_state(block_state: BlockState) -> bool {
-    if is_block_state_passable(block_state) || BlockKind::from(block_state) == BlockKind::Water {
+pub fn should_mine_block_state(block_state: BlockState, door_handling: &DoorHandling) -> bool {
+    let block_kind = BlockKind::from(block_state);
+    if is_block_state_passable(block_state, door_handling) || block_kind == BlockKind::Water {
         // block is already passable, no need to mine it
         return false;
     }
 
     true
+}
+
+/// Check if this block is a closed door that needs to be opened.
+pub fn should_interact_with_door_block_state(block_state: BlockState) -> bool {
+    let registry_block = BlockKind::from(block_state);
+    if !is_door_block_kind(registry_block) {
+        return false;
+    }
+
+    // Can't open iron or waxed copper doors/trapdoors by hand
+    if matches!(
+        registry_block,
+        BlockKind::IronDoor
+            | BlockKind::WaxedCopperDoor
+            | BlockKind::WaxedExposedCopperDoor
+            | BlockKind::WaxedWeatheredCopperDoor
+            | BlockKind::WaxedOxidizedCopperDoor
+            | BlockKind::IronTrapdoor
+            | BlockKind::WaxedCopperTrapdoor
+            | BlockKind::WaxedExposedCopperTrapdoor
+            | BlockKind::WaxedWeatheredCopperTrapdoor
+            | BlockKind::WaxedOxidizedCopperTrapdoor
+    ) {
+        return false;
+    }
+
+    // Check if the door is closed
+    block_state.property::<Open>() == Some(false)
 }
 
 pub struct IsReachedCtx<'a> {
@@ -264,4 +407,5 @@ pub struct MovesCtx<'a> {
     pub world: &'a CachedWorld,
     pub mining_cache: &'a MiningCache,
     pub custom_state: &'a CustomPathfinderStateRef,
+    pub door_handling: &'a DoorHandling,
 }

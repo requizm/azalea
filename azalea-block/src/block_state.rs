@@ -138,7 +138,7 @@ impl Debug for BlockState {
 
 impl From<BlockState> for BlockKind {
     fn from(value: BlockState) -> Self {
-        Box::<dyn BlockTrait>::from(value).as_registry_block()
+        value.block_kind()
     }
 }
 

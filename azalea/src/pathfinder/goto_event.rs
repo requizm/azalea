@@ -51,11 +51,38 @@ impl GotoEvent {
 ///
 /// [`Client::goto_with_opts`]: super::PathfinderClientExt::goto_with_opts
 /// [`Client::start_goto_with_opts`]: super::PathfinderClientExt::start_goto_with_opts
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DoorHandling {
+    /// The bot can open doors and pass through them.
+    Open,
+    /// The bot can pass through open doors but won't open closed ones.
+    PassThroughOpen,
+    /// Treat all doors as solid blocks.
+    Solid,
+}
+
+/// Configuration options that the pathfinder will use when calculating and
+/// executing a path.
+///
+/// This can be passed into [`Client::goto_with_opts`] or
+/// [`Client::start_goto_with_opts`].
+///
+/// ```
+/// # use azalea::pathfinder::{moves, PathfinderOpts};
+/// // example config to disallow mining blocks and to not do parkour
+/// let opts = PathfinderOpts::new()
+///     .allow_mining(false)
+///     .successors_fn(moves::basic::basic_move);
+/// ```
+///
+/// [`Client::goto_with_opts`]: super::PathfinderClientExt::goto_with_opts
+/// [`Client::start_goto_with_opts`]: super::PathfinderClientExt::start_goto_with_opts
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct PathfinderOpts {
     pub(crate) successors_fn: SuccessorsFn,
     pub(crate) allow_mining: bool,
+    pub(crate) door_handling: DoorHandling,
     pub(crate) retry_on_no_path: bool,
     pub(crate) min_timeout: PathfinderTimeout,
     pub(crate) max_timeout: PathfinderTimeout,
@@ -66,6 +93,7 @@ impl PathfinderOpts {
         Self {
             successors_fn: moves::default_move,
             allow_mining: true,
+            door_handling: DoorHandling::Open,
             retry_on_no_path: true,
             min_timeout: PathfinderTimeout::Time(Duration::from_secs(1)),
             max_timeout: PathfinderTimeout::Time(Duration::from_secs(5)),
@@ -83,6 +111,13 @@ impl PathfinderOpts {
     /// Defaults to `true`.
     pub fn allow_mining(mut self, allow_mining: bool) -> Self {
         self.allow_mining = allow_mining;
+        self
+    }
+    /// Set how the bot should handle doors while pathfinding.
+    ///
+    /// Defaults to `DoorHandling::Open`.
+    pub fn door_handling(mut self, door_handling: DoorHandling) -> Self {
+        self.door_handling = door_handling;
         self
     }
     /// Whether we should recalculate the path when the pathfinder timed out and

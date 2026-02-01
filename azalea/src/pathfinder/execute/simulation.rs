@@ -25,7 +25,7 @@ use crate::{
         system::{Commands, Query},
     },
     pathfinder::{
-        ExecutingPath,
+        DoorHandling, ExecutingPath,
         debug::debug_render_path_with_particles,
         moves::{ExecuteCtx, IsReachedCtx},
         simulation::{SimulatedPlayerBundle, Simulation},
@@ -90,6 +90,7 @@ pub struct SimulatingPathOpts {
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn tick_execute_path(
     mut commands: Commands,
     mut query: Query<(
@@ -110,6 +111,7 @@ pub fn tick_execute_path(
     mut walk_events: MessageWriter<StartWalkEvent>,
     mut jump_events: MessageWriter<JumpEvent>,
     mut start_mining_events: MessageWriter<StartMiningBlockEvent>,
+    mut start_use_item_events: MessageWriter<azalea_client::interact::StartUseItemEvent>,
 ) {
     for (
         entity,
@@ -126,6 +128,7 @@ pub fn tick_execute_path(
     ) in &mut query
     {
         executing_path.ticks_since_last_node_reached += 1;
+        executing_path.ticks_executing += 1;
 
         if executing_path.ticks_since_last_node_reached == 1 {
             if let Some(SimulatingPathState::Simulated(s)) = simulating_path_state {
@@ -170,6 +173,9 @@ pub fn tick_execute_path(
         match &*simulating_path_state {
             SimulatingPathState::Fail => {
                 if let Some(edge) = executing_path.path.front() {
+                    let execute_fn = edge.movement.data.execute;
+                    let last_reached_node = executing_path.last_reached_node;
+                    let position_value = **position;
                     let mut ctx = ExecuteCtx {
                         entity,
                         target: edge.movement.target,
@@ -187,13 +193,16 @@ pub fn tick_execute_path(
                         walk_events: &mut walk_events,
                         jump_events: &mut jump_events,
                         start_mining_events: &mut start_mining_events,
+                        start_use_item_events: &mut start_use_item_events,
+                        executing_path: Some(&mut executing_path),
+                        door_handling: &DoorHandling::Open,
                     };
                     ctx.on_tick_start();
                     trace!(
                         "executing move, position: {}, last_reached_node: {}",
-                        **position, executing_path.last_reached_node
+                        position_value, last_reached_node
                     );
-                    (edge.movement.data.execute)(ctx);
+                    execute_fn(ctx);
                 }
             }
             SimulatingPathState::Simulated(SimulatingPathOpts {
@@ -429,6 +438,7 @@ fn run_one_simulation(
                     MessageWriter<StartWalkEvent>,
                     MessageWriter<JumpEvent>,
                     MessageWriter<StartMiningBlockEvent>,
+                    MessageWriter<azalea_client::interact::StartUseItemEvent>,
                 )>::new(sim.app.world_mut());
                 let (
                     mut commands,
@@ -438,6 +448,7 @@ fn run_one_simulation(
                     mut walk_events,
                     mut jump_events,
                     mut start_mining_events,
+                    mut start_use_item_events,
                 ) = system_state.get_mut(sim.app.world_mut());
 
                 let (position, physics, mining, inventory) = query.get(sim.entity).unwrap();
@@ -468,6 +479,9 @@ fn run_one_simulation(
                     walk_events: &mut walk_events,
                     jump_events: &mut jump_events,
                     start_mining_events: &mut start_mining_events,
+                    start_use_item_events: &mut start_use_item_events,
+                    executing_path: None,
+                    door_handling: &DoorHandling::Open,
                 });
                 system_state.apply(sim.app.world_mut());
             }

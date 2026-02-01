@@ -66,6 +66,7 @@ impl Plugin for DefaultPathfinderExecutionPlugin {
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 pub fn tick_execute_path(
     mut commands: Commands,
     mut query: Query<(
@@ -76,19 +77,33 @@ pub fn tick_execute_path(
         Option<&Mining>,
         &WorldHolder,
         &Inventory,
+        &Pathfinder,
     )>,
     mut look_at_events: MessageWriter<LookAtEvent>,
     mut sprint_events: MessageWriter<StartSprintEvent>,
     mut walk_events: MessageWriter<StartWalkEvent>,
     mut jump_events: MessageWriter<JumpEvent>,
     mut start_mining_events: MessageWriter<StartMiningBlockEvent>,
+    mut start_use_item_events: MessageWriter<azalea_client::interact::StartUseItemEvent>,
 ) {
-    for (entity, mut executing_path, position, physics, mining, world_holder, inventory) in
-        &mut query
+    for (
+        entity,
+        mut executing_path,
+        position,
+        physics,
+        mining,
+        world_holder,
+        inventory,
+        pathfinder,
+    ) in &mut query
     {
         executing_path.ticks_since_last_node_reached += 1;
+        executing_path.ticks_executing += 1;
 
         if let Some(edge) = executing_path.path.front() {
+            let execute_fn = edge.movement.data.execute;
+            let last_reached_node = executing_path.last_reached_node;
+            let position_value = **position;
             let mut ctx = ExecuteCtx {
                 entity,
                 target: edge.movement.target,
@@ -106,13 +121,16 @@ pub fn tick_execute_path(
                 walk_events: &mut walk_events,
                 jump_events: &mut jump_events,
                 start_mining_events: &mut start_mining_events,
+                start_use_item_events: &mut start_use_item_events,
+                executing_path: Some(&mut executing_path),
+                door_handling: &pathfinder.opts.as_ref().unwrap().door_handling,
             };
             ctx.on_tick_start();
             trace!(
                 "executing move, position: {}, last_reached_node: {}",
-                **position, executing_path.last_reached_node
+                position_value, last_reached_node
             );
-            (edge.movement.data.execute)(ctx);
+            execute_fn(ctx);
         }
     }
 }

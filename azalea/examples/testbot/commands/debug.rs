@@ -9,8 +9,8 @@ use azalea::{
     inventory,
     packet::game,
     pathfinder::{
-        ExecutingPath, Pathfinder, custom_state::CustomPathfinderStateRef, mining::MiningCache,
-        moves::MovesCtx, positions::RelBlockPos, world::CachedWorld,
+        DoorHandling, ExecutingPath, Pathfinder, custom_state::CustomPathfinderStateRef,
+        mining::MiningCache, moves::MovesCtx, positions::RelBlockPos, world::CachedWorld,
     },
 };
 use azalea_core::hit_result::HitResult;
@@ -200,7 +200,7 @@ pub fn register(commands: &mut CommandDispatcher<Mutex<CommandSource>>) {
         let position = BlockPos::from(position);
 
         let mut edges = Vec::new();
-        let cached_world = CachedWorld::new(source.bot.world(), position);
+        let cached_world = CachedWorld::new(source.bot.world(), position, DoorHandling::Open);
         let mining_cache = MiningCache::new(Some(Menu::Player(inventory::Player::default())));
         let custom_state = CustomPathfinderStateRef::default();
 
@@ -210,6 +210,7 @@ pub fn register(commands: &mut CommandDispatcher<Mutex<CommandSource>>) {
                 world: &cached_world,
                 mining_cache: &mining_cache,
                 custom_state: &custom_state,
+                door_handling: &DoorHandling::Open,
             },
             RelBlockPos::from_origin(position, position),
         );
