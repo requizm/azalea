@@ -202,83 +202,6 @@ impl CachedWorld {
         )
     }
 
-    fn is_door_properly_placed(&self, block_state: BlockState, pos: BlockPos) -> bool {
-        let block_kind = block_state.block_kind();
-        if Self::is_regular_door_kind(block_kind) {
-            if let Some(half) = block_state.property::<properties::Half>() {
-                match half {
-                    properties::Half::Lower => {
-                        let support_pos = pos.down(1);
-                        let support_state = self
-                            .world_lock
-                            .read()
-                            .get_block_state(support_pos)
-                            .unwrap_or_default();
-                        is_block_state_solid(support_state)
-                    }
-                    properties::Half::Upper => {
-                        let support_pos = pos.down(1).down(1);
-                        let support_state = self
-                            .world_lock
-                            .read()
-                            .get_block_state(support_pos)
-                            .unwrap_or_default();
-                        is_block_state_solid(support_state)
-                    }
-                }
-            } else {
-                let support_pos = pos.down(1);
-                let support_state = self
-                    .world_lock
-                    .read()
-                    .get_block_state(support_pos)
-                    .unwrap_or_default();
-                is_block_state_solid(support_state)
-            }
-        } else if Self::is_trapdoor_kind(block_kind) {
-            if let Some(half) = block_state.property::<properties::TopBottom>() {
-                match half {
-                    properties::TopBottom::Bottom => {
-                        let support_pos = pos.down(1);
-                        let support_state = self
-                            .world_lock
-                            .read()
-                            .get_block_state(support_pos)
-                            .unwrap_or_default();
-                        is_block_state_solid(support_state)
-                    }
-                    properties::TopBottom::Top => {
-                        let support_pos = pos.up(1);
-                        let support_state = self
-                            .world_lock
-                            .read()
-                            .get_block_state(support_pos)
-                            .unwrap_or_default();
-                        is_block_state_solid(support_state)
-                    }
-                }
-            } else {
-                let support_pos = pos.down(1);
-                let support_state = self
-                    .world_lock
-                    .read()
-                    .get_block_state(support_pos)
-                    .unwrap_or_default();
-                is_block_state_solid(support_state)
-            }
-        } else if Self::is_fence_gate_kind(block_kind) {
-            let support_pos = pos.down(1);
-            let support_state = self
-                .world_lock
-                .read()
-                .get_block_state(support_pos)
-                .unwrap_or_default();
-            is_block_state_solid(support_state)
-        } else {
-            true
-        }
-    }
-
     // ```
     // fn get_block_state(&self, pos: BlockPos) -> Option<BlockState> {
     //     self.with_section(ChunkSectionPos::from(pos), |section| {
@@ -288,15 +211,18 @@ impl CachedWorld {
     // }
     // ```
 
+    #[allow(clippy::explicit_auto_deref)]
     fn with_section<T>(
         &self,
         section_pos: SmallChunkSectionPos,
-        f: impl FnOnce(&azalea_world::palette::PalettedContainer<BlockState>) -> T,
+        f: impl FnOnce(&azalea_world::palette::PalettedContainer<BlockState>, &World) -> T,
     ) -> Option<T> {
         if section_pos.y * 16 < self.min_y {
             // y position is out of bounds
             return None;
         }
+
+        let world = self.world_lock.read();
 
         let chunk_pos = ChunkPos::new(section_pos.x as i32, section_pos.z as i32);
         let section_index =
@@ -331,7 +257,7 @@ impl CachedWorld {
                     return None;
                 };
                 let section = &sections[section_index];
-                return Some(f(section));
+                return Some(f(section, &*world));
             }
         } else if let Some(sections) = unbounded_chunk_cache.get(&chunk_pos) {
             if section_index >= sections.len() {
@@ -339,10 +265,9 @@ impl CachedWorld {
                 return None;
             };
             let section = &sections[section_index];
-            return Some(f(section));
+            return Some(f(section, &*world));
         }
 
-        let world = self.world_lock.read();
         let chunk = world.chunks.get(&chunk_pos)?;
         let chunk = chunk.read();
 
@@ -358,7 +283,7 @@ impl CachedWorld {
         };
 
         let section = &sections[section_index];
-        let r = f(section);
+        let r = f(section, &*world);
 
         // add the sections to the chunk cache
         if unbounded_chunk_cache.is_empty() {
@@ -372,7 +297,7 @@ impl CachedWorld {
 
     fn calculate_bitsets_for_section(&self, section_pos: SmallChunkSectionPos) -> CachedSection {
         let bitsets = self
-            .with_section(section_pos, |section| {
+            .with_section(section_pos, |section, world| {
                 let mut passable_bitset = FastFixedBitSet::<4096>::new();
                 let mut solid_bitset = FastFixedBitSet::<4096>::new();
                 let mut standable_bitset = FastFixedBitSet::<4096>::new();
@@ -391,7 +316,72 @@ impl CachedWorld {
                                 let z = ((i / 16) % 16) as i32;
                                 let pos =
                                     BlockPos::new(chunk_pos.x * 16 + x, y, chunk_pos.z * 16 + z);
-                                self.is_door_properly_placed(block_state, pos)
+                                let properly_placed = {
+                                    let block_kind = block_state.block_kind();
+                                    if Self::is_regular_door_kind(block_kind) {
+                                        if let Some(half) =
+                                            block_state.property::<properties::Half>()
+                                        {
+                                            match half {
+                                                properties::Half::Lower => {
+                                                    let support_pos = pos.down(1);
+                                                    let support_state = world
+                                                        .get_block_state(support_pos)
+                                                        .unwrap_or_default();
+                                                    is_block_state_solid(support_state)
+                                                }
+                                                properties::Half::Upper => {
+                                                    let support_pos = pos.down(1).down(1);
+                                                    let support_state = world
+                                                        .get_block_state(support_pos)
+                                                        .unwrap_or_default();
+                                                    is_block_state_solid(support_state)
+                                                }
+                                            }
+                                        } else {
+                                            let support_pos = pos.down(1);
+                                            let support_state = world
+                                                .get_block_state(support_pos)
+                                                .unwrap_or_default();
+                                            is_block_state_solid(support_state)
+                                        }
+                                    } else if Self::is_trapdoor_kind(block_kind) {
+                                        if let Some(half) =
+                                            block_state.property::<properties::TopBottom>()
+                                        {
+                                            match half {
+                                                properties::TopBottom::Bottom => {
+                                                    let support_pos = pos.down(1);
+                                                    let support_state = world
+                                                        .get_block_state(support_pos)
+                                                        .unwrap_or_default();
+                                                    is_block_state_solid(support_state)
+                                                }
+                                                properties::TopBottom::Top => {
+                                                    let support_pos = pos.up(1);
+                                                    let support_state = world
+                                                        .get_block_state(support_pos)
+                                                        .unwrap_or_default();
+                                                    is_block_state_solid(support_state)
+                                                }
+                                            }
+                                        } else {
+                                            let support_pos = pos.down(1);
+                                            let support_state = world
+                                                .get_block_state(support_pos)
+                                                .unwrap_or_default();
+                                            is_block_state_solid(support_state)
+                                        }
+                                    } else if Self::is_fence_gate_kind(block_kind) {
+                                        let support_pos = pos.down(1);
+                                        let support_state =
+                                            world.get_block_state(support_pos).unwrap_or_default();
+                                        is_block_state_solid(support_state)
+                                    } else {
+                                        true
+                                    }
+                                };
+                                properly_placed
                                     && is_block_state_passable(block_state, &self.door_handling)
                             }
                         }
@@ -476,7 +466,7 @@ impl CachedWorld {
         );
         let index = u16::from(section_block_pos) as usize;
 
-        self.with_section(section_pos, |section| section.get_at_index(index))
+        self.with_section(section_pos, |section, _world| section.get_at_index(index))
             .unwrap_or_default()
     }
 
@@ -562,7 +552,7 @@ impl CachedWorld {
 
         let mut is_falling_block_above = false;
 
-        let Some(mut mining_cost) = self.with_section(section_pos, |section| {
+        let Some(mut mining_cost) = self.with_section(section_pos, |section, _world| {
             let block_state = section.get_at_index(u16::from(section_block_pos) as usize);
             let mining_cost = mining_cache.cost_for(block_state);
 
@@ -643,7 +633,7 @@ impl CachedWorld {
             check: impl FnOnce(BlockState) -> bool,
         ) -> bool {
             let block_state = world
-                .with_section(SmallChunkSectionPos::from(pos), |section| {
+                .with_section(SmallChunkSectionPos::from(pos), |section, _world| {
                     section.get_at_index(u16::from(ChunkSectionBlockPos::from(pos)) as usize)
                 })
                 .unwrap_or_default();
